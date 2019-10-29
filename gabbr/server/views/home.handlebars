@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Chat</title>
+    <script src="https://www.google.com/recaptcha/api.js" nonce="{{{nonce}}}" async defer></script>
+    <style>
+        body {
+            font-family: Comic Sans MS;
+            background: url(https://media.giphy.com/media/cEAIx6Tk1nrRC/giphy.gif);
+            background-size: cover;
+            padding-left: 1em;
+        }
+    </style>
+</head>
+
+<body>
+    <script nonce="{{{nonce}}}">
+
+        class Message extends HTMLElement {
+            constructor() {
+                super();
+                this.date = new Date();
+            }
+
+            get username() {
+                return this.getAttribute("username");
+            }
+
+            get content() {
+                return this.innerHTML;
+            }
+
+            static get observedAttributes() {
+                return ['content', 'username'];
+            }
+
+            render() {
+                this.innerHTML = `<li><em>${this.date.toLocaleTimeString()}</em> <b>${this.username}</b>: ${this.content}</li>`;
+            }
+
+            connectedCallback() {
+                this.render()
+            }
+
+            attributeChangedCallback(name, oldValue, newValue) {
+                this.render()
+            }
+        }
+
+        class Join extends HTMLElement {
+            constructor() {
+                super();
+                this.date = new Date();
+            }
+
+            get username() {
+                return this.getAttribute("username");
+            }
+
+            static get observedAttributes() {
+                return ['username'];
+            }
+
+            render() {
+                this.innerHTML = `<li><em>${this.date.toLocaleTimeString()}</em> -> <em>${this.username} joined the room</em></li>`;
+            }
+
+            connectedCallback() {
+                this.render()
+            }
+
+            attributeChangedCallback(name, oldValue, newValue) {
+                this.render()
+            }
+        }
+
+        class Leave extends HTMLElement {
+            constructor() {
+                super();
+                this.date = new Date();
+            }
+
+            get username() {
+                return this.getAttribute("username");
+            }
+
+            static get observedAttributes() {
+                return ['username'];
+            }
+
+            render() {
+                this.innerHTML = `<li><em>${this.date.toLocaleTimeString()}</em> <- <em>${this.username} left the room</em></li>`;
+            }
+
+            connectedCallback() {
+                this.render()
+            }
+
+            attributeChangedCallback(name, oldValue, newValue) {
+                this.render()
+            }
+        }
+
+        window.customElements.define('gabbr-message', Message);
+        window.customElements.define('gabbr-join', Join);
+        window.customElements.define('gabbr-leave', Leave);
+
+        function uuidv4() {
+            return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+                var r = (Math.random() * 16) | 0, v = c == "x" ? r : (r & 0x3) | 0x8;
+                return v.toString(16);
+            });
+        }
+
+        function getCookie(name) {
+            var v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+            return v ? v[2] : null;
+        }
+
+        var sendReport = function(token) {
+            var reportLink = document.getElementById("report-link");
+            document.getElementById("recaptcha").innerHTML="";
+            var uuid = document.location.hash.slice(1);
+            var report = new XMLHttpRequest();
+            report.open("POST", `/report/${uuid}`);
+            report.setRequestHeader("recaptcha-token", token);
+            report.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+
+            reportLink.innerText = "sending report ";
+            report.onreadystatechange = function (e) {
+                if (this.readyState == 4 && this.status == 200) {
+                    alert("an admin will come check on your chat any moment...");
+                    reportLink.innerText = "report";
+                } else {
+                    report.innerText += ".";
+                }
+            }
+            report.send(`g-recaptcha-response=${token}`);
+        };
+
+
+        window.addEventListener('hashchange', function () {
+            document.location.reload(false);
+        })
+
+        window.addEventListener('load', function () {
+            if (document.location.hash === "") {
+                document.location.hash = uuidv4();
+            }
+
+            var uuid = document.location.hash.slice(1);
+            var username = decodeURIComponent(getCookie("username"));
+            var usernameLink = document.getElementById("username");
+            var reportLink = document.getElementById("report-link");
+            var messages = document.getElementById("messages");
+            var statusbox = document.getElementById("status");
+
+            var ws = new WebSocket(`ws://{{{host}}}/${uuid}`);
+
+            {{!-- recaptcha disabled --}}
+            reportLink.addEventListener("click", function (event) {
+                event.preventDefault();
+                {{!-- grecaptcha.render('recaptcha', {
+                    'sitekey' : '{{{recaptchaPublicKey}}}',
+                    'callback' : sendReport,
+                    'theme' : 'dark'
+                }); --}}
+                sendReport('recaptcha-disabled')
+            });
+
+            usernameLink.innerText = username;
+            usernameLink.setAttribute("href", `#${uuid}`);
+            usernameLink.addEventListener("click", function () {
+                document.cookie = 'username=; expires=Thu, 01 Jan 1970 00:00:00 UTC';
+                window.location.reload(false);
+            });
+
+            var chatbox = document.getElementById("chatbox");
+            chatbox.addEventListener("keyup", function (event) {
+                if (event.keyCode != 13)
+                    return;
+
+                event.preventDefault();
+                console.log(chatbox.value);
+                ws.send(JSON.stringify({
+                    "username": username,
+                    "type": "gabbr-message",
+                    "content": chatbox.value
+                }));
+                chatbox.value = "";
+            });
+
+            ws.onopen = function () {
+                statusbox.innerText = "Welcome to this stylish chat! Just share the URL and anyone with anyone you want to talk with!";
+                ws.send(JSON.stringify({
+                    "username": username,
+                    "type": "gabbr-join"
+                }));
+            }
+            ws.onclose = function () {
+                statusbox.innerText = "disconnected";
+            }
+
+            ws.onmessage = function (event) {
+                var msg = JSON.parse(event.data);
+                let el = document.createElement(msg.type);
+                for (attr in msg) {
+                    if (attr != "type" && attr != "content")
+                        el.setAttribute(attr, msg[attr]);
+                }
+                if (msg.content)
+                    el.innerHTML=msg.content;
+                messages.insertBefore(el, messages.firstChild);
+            }
+        });
+    </script>
+    <nav>
+        <a href="/">new chat</a>
+        <a id='report-link' href="#">report</a>
+        <a id='username' href="/">username</a>
+    </nav>
+    <div id="recaptcha"></div>
+
+    <input id="chatbox" placeholder="press enter to send"></input>
+    <div id="status">disconnected</div>
+    <ul id="messages">
+    </ul>
+</body>
+
+</html>

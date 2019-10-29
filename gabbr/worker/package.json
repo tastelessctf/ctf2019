@@ -1,0 +1,25 @@
+{
+  "name": "chattr-worker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server/worker.js"
+  },
+  "author": "plonk",
+  "license": "ISC",
+  "dependencies": {
+    "geckodriver": "^1.19.0",
+    "kue": "^0.11.6",
+    "prom-client": "^11.5.3",
+    "selenium-webdriver": "^4.0.0-alpha.5",
+    "sleep": "^6.1.0"
+  },
+  "devDependencies": {
+    "@types/kue": "^0.11.13",
+    "@types/selenium-webdriver": "^4.0.5",
+    "@types/sleep": "0.0.7",
+    "typescript": "^3.6.4"
+  }
+}

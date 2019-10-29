@@ -1,0 +1,71 @@
+version: '3'
+services:
+  web:
+    build: server/
+    restart: unless-stopped
+    networks:
+    - gabbr
+    environment:
+      NODE_ENV: production
+      HOST: "localhost:8080"
+      RECAPTCHA_PUBLIC_KEY: "abc"
+      RECAPTCHA_PRIVATE_KEY: "def"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+    ports:
+      - "8080:1337"
+  kue-ui:
+    build: kue-ui/
+    restart: unless-stopped
+    networks:
+    - gabbr
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+    ports:
+      - "8081:3000"
+  worker:
+    build: worker/
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      URL: "http://localhost:8080/"
+      USERNAME: "admin"
+      FLAG: "tctf{wh4t_!5_th1s_n0nCen3_s3cur1tah_p0l1ceh?!}"
+      WORKER_ID: 1
+      PUSHGATEWAY: "http://localhost:9091"
+      REDIS_HOST: localhost
+      REDIS_PORT: 8379
+      REDIS: "redis://localhost:8379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+  redis:
+    image: redis
+    restart: unless-stopped
+    networks:
+    - gabbr
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+    ports:
+    - "8379:6379"
+  pushgateway:
+    image: prom/pushgateway:v1.0.0
+    container_name: pushgateway
+    restart: unless-stopped
+    ports:
+    - "9101:9091"
+    networks:
+    - gabbr
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+networks:
+  gabbr:
