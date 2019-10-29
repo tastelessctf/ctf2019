@@ -1,0 +1,80 @@
+diff --git a/fs/cpio/init b/fs/cpio/init
+index dbe09ac68e..16c0d6ee9d 100755
+--- a/fs/cpio/init
++++ b/fs/cpio/init
+@@ -1,7 +1,74 @@
+ #!/bin/sh
+ # devtmpfs does not get automounted for initramfs
++
++
++
++DAEMON="tee-supplicant"
++DAEMON_PATH="/usr/sbin"
++DAEMON_ARGS="-d /dev/teepriv0"
++PIDFILE="/var/run/$DAEMON.pid"
++
++start_tee() {
++    printf 'Set permissions on %s: ' "/dev/tee*"
++    chown root:tee /dev/teepriv0 && chmod 0660 /dev/teepriv0 && \
++        chown root:teeclnt /dev/tee0 && chmod 0660 /dev/tee0
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        echo "OK"
++    else
++        echo "FAIL"
++        return "$status"
++    fi
++    if [ -e /dev/ion ]; then
++        printf 'Set permissions on %s: ' "/dev/ion"
++        chown root:ion /dev/ion && chmod 0660 /dev/ion
++        status=$?
++        if [ "$status" -eq 0 ]; then
++            echo "OK"
++        else
++            echo "FAIL"
++            return "$status"
++        fi
++    fi
++    printf 'Create/set permissions on %s: ' "/data/tee"
++    mkdir -p /data/tee && chown -R tee:tee /data/tee && chmod 0770 /data/tee
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        echo "OK"
++    else
++        echo "FAIL"
++        return "$status"
++    fi
++    printf 'Starting %s: ' "$DAEMON"
++    start-stop-daemon -S -q -p "$PIDFILE" -c tee -x "$DAEMON_PATH/$DAEMON" \
++        -- $DAEMON_ARGS
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        echo "OK"
++    else
++        echo "FAIL"
++    fi
++}
++
++
++
+ /bin/mount -t devtmpfs devtmpfs /dev
+ exec 0</dev/console
+ exec 1>/dev/console
+ exec 2>/dev/console
+-exec /sbin/init "$@"
++#/bin/sh
++
++chown ctf:ctf /flag1.txt
++chmod 400 /flag1.txt
++
++chown root:root /flag2.txt
++chmod 600 /flag2.txt
++
++chown root:root /usr/bin/tstlss_tee
++chmod 4755 /usr/bin/tstlss_tee
++
++start_tee
++
++stty raw -ctlecho
++
++su ctf -c "/usr/bin/tstlss_tee"

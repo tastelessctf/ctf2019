@@ -1,0 +1,1475 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b8879b8..4a8bea1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -25,7 +25,7 @@ if(CCACHE_FOUND)
+ 	set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+ endif(CCACHE_FOUND)
+ 
+-file(GLOB dirs *)
++file(GLOB dirs tstlss_*)
+ foreach(dir ${dirs})
+ 	if(EXISTS ${dir}/CMakeLists.txt)
+ 		add_subdirectory(${dir})
+diff --git a/hello_world/Makefile b/hello_world/Makefile
+index b188683..d9d5f6e 100644
+--- a/hello_world/Makefile
++++ b/hello_world/Makefile
+@@ -6,7 +6,7 @@ TA_CROSS_COMPILE ?= $(CROSS_COMPILE)
+ 
+ .PHONY: all
+ all:
+-	$(MAKE) -C host CROSS_COMPILE="$(HOST_CROSS_COMPILE)" --no-builtin-variables
++	$(MAKE) -C host -s CROSS_COMPILE="$(HOST_CROSS_COMPILE)" --no-builtin-variables
+ 	$(MAKE) -C ta CROSS_COMPILE="$(TA_CROSS_COMPILE)" LDFLAGS=""
+ 
+ .PHONY: clean
+diff --git a/hello_world/host/main.c b/hello_world/host/main.c
+index 378082b..a2dcdce 100644
+--- a/hello_world/host/main.c
++++ b/hello_world/host/main.c
+@@ -28,78 +28,572 @@
+ #include <err.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <signal.h>
+ 
+-/* OP-TEE TEE client API (built by optee_client) */
+ #include <tee_client_api.h>
+-
+ /* To the the UUID (found the the TA's h-file(s)) */
+ #include <hello_world_ta.h>
+ 
+-int main(void)
++#define NAME_LEN 32
++
++#define CHECK_RES_ERROR_EXIT(res, val)   \
++    if (res == val) {                \
++        puts(":(");                 \
++        exit(-1);                   \
++    }
++
++#define rm_meta(ptr) \
++    assert(false);
++
++
++
++
++typedef struct tea {
++    unsigned int id;
++    char *id_name;
++    char *print_name;
++    unsigned int desc_len;
++    struct tea * next;
++} tea_t;
++
++static tea_t * tea_head = NULL;
++static unsigned int id_ctx = 0;
++
++
++
++/*  Flag functions */
++void put_flag(TEEC_Session sess, char *flag_str)
++{
++	TEEC_Operation op;
++    TEEC_Result res;
++	uint32_t err_origin;
++	memset(&op, 0, sizeof(op));
++
++	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++					 TEEC_NONE, TEEC_NONE, TEEC_NONE);
++
++	op.params[0].tmpref.buffer = flag_str;
++	op.params[0].tmpref.size = strlen(flag_str);
++
++    printf("Setting Flag\n");
++	res = TEEC_InvokeCommand(&sess, TA_TSTLSS_CMD_PUTFLAG, &op,
++				 &err_origin);
++	if (res != TEEC_SUCCESS)
++		errx(1, "TEEC_InvokeCommand failed with code 0x%x origin 0x%x",
++			res, err_origin);
++
++}
++
++void read_flag(TEEC_Session sess)
++{
++	TEEC_Operation op;
++    TEEC_Result res;
++	uint32_t err_origin;
++    char data[32];
++
++	memset(&data, 0, 32);
++	memset(&op, 0, sizeof(op));
++
++	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT,
++					 TEEC_NONE, TEEC_NONE, TEEC_NONE);
++
++	op.params[0].tmpref.buffer = data;
++	op.params[0].tmpref.size = 1024;
++
++
++	res = TEEC_InvokeCommand(&sess,
++				 TA_TSTLSS_CMD_GETFLAG,
++				 &op, &err_origin);
++	if (res != TEEC_SUCCESS)
++        //printf("Failed to get flag 0x%x / %u :( \n", res, err_origin);
++		puts("You should not be able to read the flag. Hence, it's okay that it didn't work");
++
++    puts(data);
++
++
++}
++
++/* I/O Functions */
++
++unsigned int get_int(void)
++{
++    char input[10];
++    int res;
++    CHECK_RES_ERROR_EXIT(read(0, &input, 10), -1)
++    res = atoi(input);
++    if (res < 0){
++        puts(":(");
++        exit(-1);
++    }
++    puts("");
++    return res;
++}
++
++char get_char(void)
++{
++    char input[10];
++    CHECK_RES_ERROR_EXIT(read(0, &input, 10), -1)
++    return input[0];
++}
++
++char *get_string(int n)
++{
++    int res;
++    char *input;
++
++    CHECK_RES_ERROR_EXIT(n, 0);
++    input = malloc(n+1);
++    res = read(0, input, n);
++    CHECK_RES_ERROR_EXIT(res, -1);
++    if (input[res-1] == '\n')
++        input[res-1] = '\0';
++    else
++        input[res] = '\0';
++    return input;
++}
++
++
++/*  Core Logic functions */
++tea_t *get_tea_by_id(unsigned int id) {    
++    tea_t *tea = tea_head;                      
++    while(tea->id != id) {                      
++        CHECK_RES_ERROR_EXIT(tea->next, NULL);  
++        tea = tea->next;                        
++    }
++    return tea;
++}
++
++tea_t *get_prev_tea_by_id(unsigned int id) {    
++    tea_t *tea = tea_head;                      
++    tea_t *tea_prev = NULL;                     
++    while(tea->id != id) {                      
++        CHECK_RES_ERROR_EXIT(tea->next, NULL);  
++        tea_prev = tea;                         
++        tea = tea->next;                        
++    }
++    return tea_prev;
++}
++
++
++
++void add_tea(TEEC_Session sess)
++{
++    tea_t *tea;
++    tea_t *list_ptr;
++    uint32_t origin;
++    unsigned int steep_time, desc_len;
++    char *name, *desc;
++    TEEC_Result res;
++	TEEC_Operation op;
++
++    printf("Name: ");
++    name = get_string(NAME_LEN);
++
++
++    printf("Description length: ");
++    desc_len = get_int();
++    if (desc_len == 0) {
++        puts("Have you ever seen a tea without description?");
++        free(name);
++        return;
++    }
++
++    printf("Description: ");
++    desc = get_string(desc_len);
++
++    printf("Steep time: ");
++    steep_time = get_int();
++    if (steep_time == 0) {
++        puts("You really just wan't hot water? I don't think so");
++        free(name);
++        free(desc);
++        return;
++    }
++
++	memset(&op, 0, sizeof(op));
++	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_VALUE_INPUT, TEEC_NONE);
++    op.params[0].tmpref.buffer = name;
++    op.params[0].tmpref.size   = strlen(name);
++    op.params[1].tmpref.buffer = desc;
++    op.params[1].tmpref.size   = desc_len;
++    op.params[2].value.a       = steep_time;
++
++    
++	res = TEEC_InvokeCommand(&sess, TA_TSTLSS_ADD_TEA, &op, &origin);
++
++    memset(desc, 0, desc_len);
++    free(desc);
++
++    if (res == 0xffff5000) {
++		puts("The steep time is too damn high!");
++        free(name);
++        return;
++    }
++	if (res != TEEC_SUCCESS){
++		puts("Something is fishy about your tea. Did you try to make coffee?");
++		//printf("Putting tea in TA failed: 0x%x / %u\n", res, origin);
++        free(name);
++        return;
++    }
++
++
++    tea = calloc(1,sizeof(tea_t));
++    tea->id_name = name;
++    tea->print_name = name;
++    tea->id = id_ctx;
++    tea->desc_len = desc_len;
++    tea->next = NULL;
++
++    /* add tea at end, who cares about performance? */
++    if (tea_head == NULL) {
++        tea_head = tea;
++    } else {
++        list_ptr = tea_head;
++        while (list_ptr->next != NULL)
++            list_ptr = list_ptr->next;
++        list_ptr->next = tea;
++    }
++
++    id_ctx += 1;
++    /*  todo: add note in trustzone */
++
++}
++
++void modify_tea(TEEC_Session sess)
++{
++    tea_t *tea;
++    unsigned int id;
++    unsigned int steep_time = 0;
++    char *name = NULL;
++    char *desc = NULL;
++
++    uint32_t origin;
++    TEEC_Result res;
++	TEEC_Operation op;
++
++    printf("id: ");
++    id = get_int();
++    tea = get_tea_by_id(id);
++
++    printf("Modify Name? [y/n] ");
++    if (get_char() == 'y') {
++        printf("New name: ");
++        name = get_string(NAME_LEN);
++    }
++
++    printf("Modify description? [y/n] ");
++    if (get_char() == 'y') {
++        printf("New description length: ");
++        tea->desc_len = get_int();
++        printf("New description: ");
++        desc = get_string(tea->desc_len);
++    } else {
++        desc = malloc(8);
++        strcpy(desc, "NOPE");
++    }
++    
++    printf("Modify steep time? [y/n] ");
++    if (get_char() == 'y') {
++        printf("New steep time: ");
++        steep_time = get_int();
++    }
++
++    if (name != NULL) {
++        if (tea->id_name == tea->print_name) {
++            tea->print_name = name;
++        } else {
++            memcpy(tea->print_name, name, 32);
++            free(name);
++        }
++    }
++
++
++	memset(&op, 0, sizeof(op));
++	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_VALUE_INPUT, TEEC_NONE);
++    op.params[0].tmpref.buffer = tea->id_name;
++    op.params[0].tmpref.size   = strlen(tea->id_name);
++    op.params[1].tmpref.buffer = desc;
++    op.params[1].tmpref.size   = tea->desc_len;
++    op.params[2].value.a       = steep_time;
++
++    //printf("tea->desc_len: %d\n", tea->desc_len);
++
++    
++	res = TEEC_InvokeCommand(&sess, TA_TSTLSS_MFY_TEA, &op, &origin);
++
++
++	if (res != TEEC_SUCCESS){
++        puts("Whatever you did, you did it wrong!");
++        //printf("Modifying tea failed?! 0x%x / %u\n", res, origin);
++    }
++
++    free(desc);
++
++}
++
++void remove_tea(TEEC_Session sess)
++{
++    int id;
++    tea_t *tea, *tea_prev;
++
++    uint32_t origin;
++    TEEC_Result res;
++	TEEC_Operation op;
++
++    memset(&op, 0, sizeof(op));
++
++    /* We can't remove tea's if there is none existing */
++    CHECK_RES_ERROR_EXIT(tea_head, NULL);
++
++    printf("id: ");
++    id = get_int();
++
++    tea = get_tea_by_id(id);
++
++
++    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_NONE, TEEC_NONE, TEEC_NONE);
++
++    op.params[0].tmpref.buffer = tea->id_name;
++    op.params[0].tmpref.size   = strlen(tea->id_name);
++
++	res = TEEC_InvokeCommand(&sess, TA_TSTLSS_DEL_TEA, &op, &origin);
++	if (res != TEEC_SUCCESS){
++
++        puts("Wow. This tea is stubborn and didn't like to be removed");
++        //printf("Removing tea from TA failed: 0x%x / %u\n", res, origin);
++        return;
++    }
++
++
++    /*  unlink, wheeeee */
++    tea_prev = get_prev_tea_by_id(id);
++    if (tea_prev == NULL) {
++        tea = tea_head;
++        tea_head = tea_head->next;
++    }
++    else {
++        tea_prev->next = tea->next;
++    }    
++
++    if (tea->id_name != tea->print_name) free(tea->print_name);
++    free(tea->id_name);
++    free(tea);
++}
++
++void list_tea(TEEC_Session sess)
++{
++    tea_t *tea_ptr;
++    char *desc;
++    uint32_t origin;
++    TEEC_Result res;
++	TEEC_Operation op;
++
++    tea_ptr = tea_head;
++    while(tea_ptr != NULL) {
++        printf("id: %d\n", tea_ptr->id);
++        printf("name: %s\n", tea_ptr->print_name);
++        desc = malloc(tea_ptr->desc_len);
++        memset(&op, 0, sizeof(op));
++        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_MEMREF_TEMP_OUTPUT,
++                                     TEEC_VALUE_OUTPUT, TEEC_NONE);
++
++        op.params[0].tmpref.buffer = tea_ptr->id_name;
++        op.params[0].tmpref.size   = strlen(tea_ptr->id_name);
++        op.params[1].tmpref.buffer = desc;
++        op.params[1].tmpref.size   = tea_ptr->desc_len;
++
++        //printf("tea->desc_len: %d\n", tea_ptr->desc_len);
++
++        res = TEEC_InvokeCommand(&sess, TA_TSTLSS_GET_TEA, &op, &origin);
++        if (res != TEEC_SUCCESS) {
++            printf("Couldn't retrieve information for this tea :(\n");
++        } else {
++            printf("Description: %s\n", (char *) op.params[1].tmpref.buffer);
++            printf("Steep time: %d\n", op.params[2].value.a);
++        }
++        memset(desc, 0, tea_ptr->desc_len);
++        free(desc);
++        tea_ptr = tea_ptr->next;
++    }
++}
++
++void brew_tea(TEEC_Session sess)
++{
++    int id;
++    tea_t *tea;
++    pid_t pid;
++
++    uint32_t origin;
++	TEEC_Operation op;
++    TEEC_Result res;
++
++    memset(&op, 0, sizeof(op));
++
++    /* We can't remove tea's if there is none existing */
++    CHECK_RES_ERROR_EXIT(tea_head, NULL);
++
++    printf("id: ");
++    id = get_int();
++
++    tea = get_tea_by_id(id);
++
++
++    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
++                                     TEEC_MEMREF_TEMP_OUTPUT,
++                                     TEEC_NONE, TEEC_NONE);
++
++    op.params[0].tmpref.buffer = tea->id_name;
++    op.params[0].tmpref.size   = strlen(tea->id_name);
++    op.params[1].tmpref.buffer = malloc(tea->desc_len + BREWED_TEA_LEN);
++    op.params[1].tmpref.size   = tea->desc_len + BREWED_TEA_LEN;
++
++
++    pid = fork();
++    CHECK_RES_ERROR_EXIT(pid, -1); 
++    if (pid == 0) {
++        puts("            .------.____\n"
++             "         .-'       \\ ___)\n"
++             "      .-'         \\\\\\    \n"
++             "   .-'        ___  \\\\)   \n"
++             ".-'          /  (\\  |)   \n"
++             "         __  \\  ( | |    \n"
++             "        /  \\  \\__'| |    \n"
++             "       /    \\____).-'    \n"
++             "     .'       /   |      \n"
++             "    /     .  /    |      \n"
++             "  .'     / \\/     |      \n"
++             " /      /   \\     |      \n"
++             "       /    /    _|_     \n"
++             "       \\   /    /\\ /\\    \n"
++             "        \\ /    /__v__\\   \n"
++             "         '    |       |  \n"
++             "              |     .#|  \n"
++             "              |#.  .##|  \n"
++             "              |#######|  \n"
++             "              |#######|");
++
++        printf("Brewing tea");
++        while(1) {
++            sleep(1);
++            printf(".");
++        }
++    }
++    else {
++        res = TEEC_InvokeCommand(&sess, TA_TSTLSS_BRW_TEA, &op, &origin);
++        kill(pid, SIGTERM);
++        printf("Done!\n\n%s", (char * ) op.params[1].tmpref.buffer);
++    }
++
++
++
++}
++
++/*  Diverse printing foo functions */
++void print_menu(void)
++{
++    printf("What do you want to do?\n");
++    printf("[A]dd tea\n");
++    printf("[M]odify tea\n");
++    printf("[R]emove tea\n");
++    printf("[L]ist tea\n");
++    printf("[B]rew tea\n");
++    printf("[E]xit\n"); 
++    printf("> ");
++}
++
++
++void print_banner()
++{
++    printf("### Welcome to the TEA-TEE-REE ###\n");
++}
++
++int main(int argc, char **argv)
+ {
+ 	TEEC_Result res;
+ 	TEEC_Context ctx;
+ 	TEEC_Session sess;
+-	TEEC_Operation op;
+-	TEEC_UUID uuid = TA_HELLO_WORLD_UUID;
++	TEEC_UUID uuid = TA_TSTLSS_TEE_UUID;
+ 	uint32_t err_origin;
++    char choice;
++
++    if ( argc != 2) {
++        puts(":(");
++        exit(-1);
++    }
++
++    setvbuf(stdout, NULL, _IONBF, 0);
++    setvbuf(stdin, NULL, _IONBF, 0);
++    setvbuf(stderr, NULL, _IONBF, 0);
++
+ 
+-	/* Initialize a context connecting us to the TEE */
+ 	res = TEEC_InitializeContext(NULL, &ctx);
+ 	if (res != TEEC_SUCCESS)
+-		errx(1, "TEEC_InitializeContext failed with code 0x%x", res);
++		errx(1, "Couldn't init TEE ctx 0x%x :(", res);
+ 
+-	/*
+-	 * Open a session to the "hello world" TA, the TA will print "hello
+-	 * world!" in the log when the session is created.
+-	 */
+ 	res = TEEC_OpenSession(&ctx, &sess, &uuid,
+ 			       TEEC_LOGIN_PUBLIC, NULL, NULL, &err_origin);
+ 	if (res != TEEC_SUCCESS)
+ 		errx(1, "TEEC_Opensession failed with code 0x%x origin 0x%x",
+ 			res, err_origin);
+ 
+-	/*
+-	 * Execute a function in the TA by invoking it, in this case
+-	 * we're incrementing a number.
+-	 *
+-	 * The value of command ID part and how the parameters are
+-	 * interpreted is part of the interface provided by the TA.
+-	 */
++    put_flag(sess, argv[1]);
+ 
+-	/* Clear the TEEC_Operation struct */
+-	memset(&op, 0, sizeof(op));
+ 
+-	/*
+-	 * Prepare the argument. Pass a value in the first parameter,
+-	 * the remaining three parameters are unused.
+-	 */
+-	op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INOUT, TEEC_NONE,
+-					 TEEC_NONE, TEEC_NONE);
+-	op.params[0].value.a = 42;
+-
+-	/*
+-	 * TA_HELLO_WORLD_CMD_INC_VALUE is the actual function in the TA to be
+-	 * called.
+-	 */
+-	printf("Invoking TA to increment %d\n", op.params[0].value.a);
+-	res = TEEC_InvokeCommand(&sess, TA_HELLO_WORLD_CMD_INC_VALUE, &op,
+-				 &err_origin);
+-	if (res != TEEC_SUCCESS)
+-		errx(1, "TEEC_InvokeCommand failed with code 0x%x origin 0x%x",
+-			res, err_origin);
+-	printf("TA incremented value to %d\n", op.params[0].value.a);
++    print_banner();
++    while (1) {
++        print_menu();
++        choice = get_char();
++        switch (choice) {
++            case 'A':
++            case 'a':
++                add_tea(sess);
++                break;
++            case 'L':
++            case 'l':
++                list_tea(sess);
++                break;
++            case 'R':
++            case 'r':
++                remove_tea(sess);
++                break;
++            case 'M':
++            case 'm':
++                modify_tea(sess);
++                break;
++            case 'B':
++            case 'b':
++                brew_tea(sess);
++                break;
++            case 'E':
++            case 'e':
++                exit(0);
++            case 'X':
++                read_flag(sess);
++                break;
++            default:
++                break;
++        }
+ 
+-	/*
+-	 * We're done with the TA, close the session and
+-	 * destroy the context.
+-	 *
+-	 * The TA will print "Goodbye!" in the log when the
+-	 * session is closed.
+-	 */
++    }
+ 
+-	TEEC_CloseSession(&sess);
+ 
++    //read_flag(ctx, sess);
++	TEEC_CloseSession(&sess);
++    
++	res = TEEC_OpenSession(&ctx, &sess, &uuid,
++			       TEEC_LOGIN_PUBLIC, NULL, NULL, &err_origin);
++	if (res != TEEC_SUCCESS)
++		errx(1, "TEEC_Opensession failed with code 0x%x origin 0x%x",
++			res, err_origin);
++    read_flag(sess);
+ 	TEEC_FinalizeContext(&ctx);
+ 
+ 	return 0;
+diff --git a/hello_world/ta/Makefile b/hello_world/ta/Makefile
+index 3d2e6fc..343ac22 100644
+--- a/hello_world/ta/Makefile
++++ b/hello_world/ta/Makefile
+@@ -2,7 +2,7 @@ CFG_TEE_TA_LOG_LEVEL ?= 4
+ CPPFLAGS += -DCFG_TEE_TA_LOG_LEVEL=$(CFG_TEE_TA_LOG_LEVEL)
+ 
+ # The UUID for the Trusted Application
+-BINARY=8aaaf200-2450-11e4-abe2-0002a5d5c51b
++BINARY=7a571e55-d0e5-7ea5-900d-deadbeef1336
+ 
+ -include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
+ 
+diff --git a/hello_world/ta/hello_world_ta.c b/hello_world/ta/hello_world_ta.c
+index 2423b30..05525ce 100644
+--- a/hello_world/ta/hello_world_ta.c
++++ b/hello_world/ta/hello_world_ta.c
+@@ -27,8 +27,25 @@
+ 
+ #include <tee_internal_api.h>
+ #include <tee_internal_api_extensions.h>
++#include <utee_syscalls.h>
+ 
+ #include <hello_world_ta.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define RELEASE 0
++#define FLAG_SIZE 32
++
++
++static int flagged = 0;
++
++// Thx stackoverflow
++static unsigned long atoi(const char *s) {
++  unsigned long n = 0;
++  while ( (*s>= '0') && (*s < '9')) n = 10 * n + *s++ - '0';
++  return n;
++}
++
+ 
+ /*
+  * Called when the instance of the TA is created. This is the first call in
+@@ -36,9 +53,7 @@
+  */
+ TEE_Result TA_CreateEntryPoint(void)
+ {
+-	DMSG("has been called");
+-
+-	return TEE_SUCCESS;
++    return TEE_SUCCESS;
+ }
+ 
+ /*
+@@ -47,7 +62,22 @@ TEE_Result TA_CreateEntryPoint(void)
+  */
+ void TA_DestroyEntryPoint(void)
+ {
+-	DMSG("has been called");
++    TEE_Result res;
++    TEE_ObjectHandle object;
++
++    if(flagged) {
++        res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++                        "flag", 4,
++                        TEE_DATA_FLAG_ACCESS_READ |
++                        TEE_DATA_FLAG_ACCESS_WRITE_META, 
++                        &object);
++        if (res != TEE_SUCCESS) {
++            EMSG("Failed to open flag for destroying :O res=0x%08x", res);
++            return;
++        }
++        TEE_CloseAndDeletePersistentObject1(object);
++        DMSG("RM'd the flag");
++    }
+ }
+ 
+ /*
+@@ -74,10 +104,6 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
+ 	(void)&params;
+ 	(void)&sess_ctx;
+ 
+-	/*
+-	 * The DMSG() macro is non-standard, TEE Internal API doesn't
+-	 * specify any means to logging from a TA.
+-	 */
+ 	IMSG("Hello World!\n");
+ 
+ 	/* If return value != TEE_SUCCESS the session will not be created. */
+@@ -91,48 +117,597 @@ TEE_Result TA_OpenSessionEntryPoint(uint32_t param_types,
+ void TA_CloseSessionEntryPoint(void __maybe_unused *sess_ctx)
+ {
+ 	(void)&sess_ctx; /* Unused parameter */
+-	IMSG("Goodbye!\n");
++    DMSG("called");
++}
++
++static __attribute__((noinline)) TEE_Result put_flag(uint32_t param_types, TEE_Param params[4])
++{
++	const uint32_t exp_param_types =
++		TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
++				TEE_PARAM_TYPE_NONE,
++				TEE_PARAM_TYPE_NONE,
++				TEE_PARAM_TYPE_NONE);
++	TEE_ObjectHandle object;
++	TEE_Result res;
++	char *data;
++	size_t data_sz;
++
++    if(flagged){
++        EMSG("Flag already registered, what are you doing?!?!");
++        return TEE_ERROR_ACCESS_DENIED;
++    }
++	/*
++	 * Safely get the invocation parameters
++	 */
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	data = (char *)params[0].memref.buffer;
++	data_sz = params[0].memref.size;
++
++	res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE,
++					"flag", 4,
++					TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE_META,
++					TEE_HANDLE_NULL,
++					data, data_sz,		
++					&object);
++	if (res != TEE_SUCCESS) {
++		EMSG("Placing flag in TEE failed 0x%08x", res);
++	}
++    else {
++        DMSG("Successfully placed flag in TEE");
++    }
++
++    memset(data, 0, data_sz); // better safe than sorry
++    TEE_CloseObject(object);
++
++    flagged = 1;
++	return res;
++}
++
++static __attribute__((noinline)) TEE_Result read_flag(uint32_t param_types, TEE_Param params[4])
++{
++	const uint32_t exp_param_types =
++		TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
++				TEE_PARAM_TYPE_NONE,
++				TEE_PARAM_TYPE_NONE,
++				TEE_PARAM_TYPE_NONE);
++	TEE_ObjectHandle object;
++    TEE_ObjectInfo object_info;
++	TEE_Result res;
++    unsigned int data_sz;
++	char *data;
++    uint32_t read_bytes;
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	data = (char *)params[0].memref.buffer;
++	data_sz = params[0].memref.size;
++
++#if RELEASE == 1
++    const char *passive_agressive_string = "in your dreams";
++    if (data_sz < strlen(passive_agressive_string)){
++            return TEE_ERROR_SHORT_BUFFER;
++    }
++
++    strcpy(data, passive_agressive_string);       
++	params[0].memref.size = strlen(passive_agressive_string);
++
++#else
++
++	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					"flag", 4,
++					TEE_DATA_FLAG_ACCESS_READ |
++					TEE_DATA_FLAG_SHARE_READ,
++					&object);
++	if (res != TEE_SUCCESS) {
++		EMSG("Failed to open flag, res=0x%08x", res);
++		return res;
++	}
++
++	res = TEE_GetObjectInfo1(object, &object_info);
++	if (res != TEE_SUCCESS) {
++		EMSG("Failed to get flag metadata, res=0x%08x", res);
++        TEE_CloseObject(object);
++        return res;
++	}
++	res = TEE_ReadObjectData(object, data, object_info.dataSize,
++				 &read_bytes);
++	if (res != TEE_SUCCESS || read_bytes != object_info.dataSize) {
++		EMSG("TEE_Read FlagData failed 0x%08x, read %" PRIu32 " over %u",
++				res, read_bytes, object_info.dataSize);
++	}
++
++	params[0].memref.size = read_bytes;
++    TEE_CloseObject(object);
++#endif
++
++    return res;
++}
++
++
++static __attribute__((noinline)) unsigned int get_steep_time(char *obj_id, size_t obj_id_sz) 
++{
++	TEE_ObjectHandle object;
++	TEE_ObjectInfo object_info;
++    TEE_Result res;
++    char data[4];
++	uint32_t read_bytes;
++
++    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ |
++					TEE_DATA_FLAG_SHARE_READ,
++					&object);
++	if (res != TEE_SUCCESS) {
++        EMSG("Couldn't open %s", obj_id);
++        return 0;
++    }
++
++    res = TEE_ReadObjectData(object, data, 4, &read_bytes);
++	if (res != TEE_SUCCESS || read_bytes != 4) {
++        EMSG("Couldn't read steep time.");
++        TEE_CloseObject(object);
++        return 0;
++	}
++
++    IMSG("Got steep time: %d", atoi(data));
++
++    TEE_CloseObject(object);
++    return atoi(data);
++}
++
++/* returns NULL on error */
++static __attribute__((noinline)) unsigned int get_desc_len(char *obj_id, size_t obj_id_sz)
++{
++	TEE_ObjectHandle object;
++	TEE_ObjectInfo object_info;
++    TEE_Result res;
++
++    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ |
++					TEE_DATA_FLAG_SHARE_READ,
++					&object);
++	if (res != TEE_SUCCESS) {
++        EMSG("Couldn't open %s", obj_id);
++        return 0;
++    }
++
++    res = TEE_GetObjectInfo1(object, &object_info);
++	if (res != TEE_SUCCESS) {
++		EMSG("Uhm. THAT tea is weird: 0x%x", res);
++        TEE_CloseObject(object);
++        return 0;
++	}
++
++    IMSG("Got desc_len: %d", object_info.dataSize-4);
++
++    TEE_CloseObject(object);
++    return object_info.dataSize - 4;
++}
++
++/* returns NULL on error */
++static __attribute__((noinline)) char * get_description(char *obj_id, size_t obj_id_sz)
++{
++	TEE_ObjectHandle object;
++    TEE_Result res;
++	uint32_t read_bytes;
++    unsigned int size;
++    char *data;
++
++    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ |
++					TEE_DATA_FLAG_SHARE_READ,
++					&object);
++	if (res != TEE_SUCCESS) {
++        EMSG("Couldn't open %s", obj_id);
++        return NULL;
++    }
++
++    res = TEE_SeekObjectData(object, 4, TEE_DATA_SEEK_SET);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea seek failed 0x%08x", res);
++        TEE_CloseObject(object);
++        return NULL;
++    }
++
++    size = get_desc_len(obj_id, obj_id_sz);
++    data = TEE_Malloc(size, 0);
++
++
++    res = TEE_ReadObjectData(object, data, size, &read_bytes);
++	if (res != TEE_SUCCESS || read_bytes != size) {
++		EMSG("Reading description failed 0x%08x, read %d over %u",
++				res, read_bytes, size);
++        free(data);
++        data = NULL;
++    }
++
++    IMSG("Got desc: %s", data);
++
++    TEE_CloseObject(object);
++    return data;
++}
++
++
++static __attribute__((noinline)) TEE_Result set_description(char *obj_id,
++        size_t obj_id_sz, char *data, unsigned int size)
++{
++	TEE_ObjectHandle object;
++    TEE_Result res;
++
++    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE |
++					TEE_DATA_FLAG_SHARE_READ, 
++					&object);
++	if (res != TEE_SUCCESS) {
++        EMSG("Couldn't open %s", obj_id);
++        return res;
++    }
++
++    res = TEE_TruncateObjectData(object, size+4);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea truncate failed 0x%08x", res);
++        TEE_CloseObject(object);
++        return res;
++    }
++
++    res = TEE_SeekObjectData(object, 4, TEE_DATA_SEEK_SET);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea seek failed 0x%08x", res);
++        TEE_CloseObject(object);
++        return res;
++    }
++
++	res = TEE_WriteObjectData(object, data, size);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea modification failed 0x%08x", res);
++    }
++
++    IMSG("Set desc to %s", data);
++
++    TEE_CloseObject(object);
++    return TEE_SUCCESS;
++}
++
++
++static __attribute__((noinline)) TEE_Result set_steep_time(char *obj_id,
++        size_t obj_id_sz, unsigned int steep_time)
++{
++	TEE_ObjectHandle object;
++    TEE_Result res;
++    char *data[4];
++
++    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE |
++					TEE_DATA_FLAG_SHARE_READ, 
++					&object);
++	if (res != TEE_SUCCESS) {
++        EMSG("Couldn't open %s", obj_id);
++        return res;
++    }
++
++    snprintf(data, 4, "%d", steep_time);
++
++    res = TEE_SeekObjectData(object, 0, TEE_DATA_SEEK_SET);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea seek failed 0x%08x", res);
++        TEE_CloseObject(object);
++        return res;
++    }
++
++	res = TEE_WriteObjectData(object, data, 4);
++	if (res != TEE_SUCCESS) {
++		EMSG("Tea modification failed 0x%08x", res);
++    }
++
++
++    IMSG("Set steep time to %s", data);
++
++    TEE_CloseObject(object);
++    return TEE_SUCCESS;
+ }
+ 
+-static TEE_Result inc_value(uint32_t param_types,
++
++
++static __attribute__((noinline))  TEE_Result add_tea(uint32_t param_types,
++	TEE_Param params[4])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, //name
++						   TEE_PARAM_TYPE_MEMREF_INPUT, //desc
++						   TEE_PARAM_TYPE_VALUE_INPUT, //steep time
++						   TEE_PARAM_TYPE_NONE);
++
++  	TEE_ObjectHandle object;
++	TEE_Result res;
++	char *obj_id;
++	size_t obj_id_sz;
++	char *data;
++	size_t data_sz;
++	uint32_t obj_data_flag;
++
++	DMSG("has been called");
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++ 
++    if (params[2].value.a > 999) {
++		EMSG("Too damn high steep time - you don't know how to make tea, eh?");
++        return TEE_ERROR_TIME_NOT_SET;
++    }
++    
++    if (params[2].value.a == 0) {
++		EMSG("You really just want hot water? I don't think so");
++        return TEE_ERROR_TIME_NOT_SET;
++    }
++    
++	DMSG("has been called");
++
++    // Setup ID
++    obj_id_sz = params[0].memref.size;
++	obj_id = TEE_Malloc(obj_id_sz, 0);
++	if (!obj_id) return TEE_ERROR_OUT_OF_MEMORY;
++    TEE_MemMove(obj_id, params[0].memref.buffer, obj_id_sz);
++
++    // Setup data
++    data_sz = params[1].memref.size + 4;
++    data =  TEE_Malloc(data_sz, 0);
++
++    if (!data) {
++        free(obj_id);
++        return TEE_ERROR_OUT_OF_MEMORY;
++    } 
++
++
++    snprintf(data, 4, "%d", params[2].value.a);
++    TEE_MemMove(data+4, params[1].memref.buffer, params[1].memref.size);
++
++    // create and store
++    obj_data_flag = TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE |
++                    TEE_DATA_FLAG_SHARE_READ  | TEE_DATA_FLAG_ACCESS_WRITE_META;
++
++	res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					obj_data_flag,
++					TEE_HANDLE_NULL,
++					data, data_sz,
++					&object);
++	if (res != TEE_SUCCESS) {
++		EMSG("Storing tea failed 0x%08x", res);
++	}
++
++    TEE_CloseObject(object);
++    TEE_Free(obj_id);
++    TEE_Free(data);
++    return res;
++}
++
++
++static __attribute__((noinline)) TEE_Result del_tea(uint32_t param_types,
+ 	TEE_Param params[4])
+ {
+-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INOUT,
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, //name
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE);
+ 
++    TEE_ObjectHandle object;
++	TEE_Result res;
++	char *obj_id;
++	size_t obj_id_sz;
++
++
+ 	DMSG("has been called");
+ 
+ 	if (param_types != exp_param_types)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
+-	IMSG("Got value: %u from NW", params[0].value.a);
+-	params[0].value.a++;
+-	IMSG("Increase value to: %u", params[0].value.a);
++	obj_id_sz = params[0].memref.size;
++	obj_id = TEE_Malloc(obj_id_sz, 0);
++	if (!obj_id)
++		return TEE_ERROR_OUT_OF_MEMORY;
++
++	TEE_MemMove(obj_id, params[0].memref.buffer, obj_id_sz);
++
++	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
++					obj_id, obj_id_sz,
++					TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE_META, 
++					&object);
++
++	if (res == TEE_SUCCESS) 
++        TEE_CloseAndDeletePersistentObject1(object);
++    else 
++		EMSG("Failed to delete tea: 0x%08x", res);
++	
++    TEE_Free(obj_id);
++	return res;
++}
++
++
++static __attribute__((noinline)) TEE_Result mfy_tea(uint32_t param_types,
++	TEE_Param params[4])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, //name
++						   TEE_PARAM_TYPE_MEMREF_INPUT, //desc
++						   TEE_PARAM_TYPE_VALUE_INPUT, //steep time
++						   TEE_PARAM_TYPE_NONE);
++
++
++	TEE_ObjectHandle object;
++	TEE_Result res;
++	char *obj_id;
++	size_t obj_id_sz;
++	char *data;
++	size_t data_sz;
++    unsigned int steep_time;
++
++
++	DMSG("has been called");
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++    obj_id_sz = params[0].memref.size;
++	obj_id = TEE_Malloc(obj_id_sz, 0);
++	TEE_MemMove(obj_id, params[0].memref.buffer, obj_id_sz);
++
++    DMSG("Object: %s", obj_id);
+ 
++    // Read old data
++    //data = get_description(obj_id, obj_id_sz);
++    //steep_time = get_steep_time(obj_id, obj_id_sz);
++
++    if (params[2].value.a != 0) {
++
++        IMSG("Updating steep name");
++        if (params[2].value.a > 999) {
++            EMSG("You should know better by now");
++            res = TEE_ERROR_TIME_NOT_SET;
++            goto end;
++        }
++        res = set_steep_time(obj_id, obj_id_sz, params[2].value.a);
++    }  
++
++    // Update desc, if necessarry
++    if (strncmp(params[1].memref.buffer, "NOPE", 4)) {
++        IMSG("Updating name %s", (void * )params[1].memref.buffer);
++        res = set_description(obj_id, obj_id_sz, params[1].memref.buffer, params[1].memref.size);
++
++    }  
++    // Write updated buffer back
++end:
++    free(data);
++    free(obj_id);
++    TEE_CloseObject(object);
++	return res;
++}
++
++
++
++static __attribute__((noinline)) TEE_Result get_tea(uint32_t param_types,
++	TEE_Param params[4])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, //name
++						   TEE_PARAM_TYPE_MEMREF_OUTPUT, //desc
++						   TEE_PARAM_TYPE_VALUE_OUTPUT, //steep time 
++						   TEE_PARAM_TYPE_NONE);
++	char *obj_id;
++	size_t obj_id_sz;
++    unsigned int steep_time;
++	char *data;
++	size_t data_sz;
++
++	DMSG("has been called");
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++    obj_id_sz = params[0].memref.size;
++	obj_id = TEE_Malloc(obj_id_sz, 0);
++
++    if (!obj_id) return TEE_ERROR_OUT_OF_MEMORY;
++	TEE_MemMove(obj_id, params[0].memref.buffer, obj_id_sz);
++
++
++    DMSG("Object: %s", obj_id);
++
++
++    steep_time = get_steep_time(obj_id, obj_id_sz);
++    DMSG("steep time: %d", steep_time);
++    if (steep_time == 0) {
++        free(obj_id);
++        return TEE_ERROR_TIME_NOT_SET;
++    }
++
++    data = get_description(obj_id, obj_id_sz);
++    if (data == NULL) {
++        free(obj_id);
++        return TEE_ERROR_NO_DATA;
++    }
++
++    DMSG("DESC: %s", data);
++
++    data_sz = get_desc_len(obj_id, obj_id_sz);
++    if(data_sz == 0) {
++        free(obj_id);
++        free(data);
++        return TEE_ERROR_NO_DATA;
++    }
++
++	TEE_MemMove(params[1].memref.buffer, data, data_sz);
++    params[2].value.a = steep_time;
++
++    free(obj_id);
++    free(data);
+ 	return TEE_SUCCESS;
+ }
+ 
+-static TEE_Result dec_value(uint32_t param_types,
++#define OUTBUF_SIZE 1024
++static __attribute__((noinline)) TEE_Result brw_tea(uint32_t param_types,
+ 	TEE_Param params[4])
+ {
+-	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INOUT,
+-						   TEE_PARAM_TYPE_NONE,
+-						   TEE_PARAM_TYPE_NONE,
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, //name
++						   TEE_PARAM_TYPE_MEMREF_OUTPUT, //tea
++						   TEE_PARAM_TYPE_NONE, 
+ 						   TEE_PARAM_TYPE_NONE);
+ 
+ 	DMSG("has been called");
++ 
++    TEE_ObjectHandle object;
++	TEE_ObjectInfo object_info;
++	TEE_Result res;
++	char *obj_id;
++	size_t obj_id_sz;
++    char * data;
++	size_t data_sz;
++    char output[OUTBUF_SIZE];
++    bool use_desc;
+ 
+ 	if (param_types != exp_param_types)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
+-	IMSG("Got value: %u from NW", params[0].value.a);
+-	params[0].value.a--;
+-	IMSG("Decrease value to: %u", params[0].value.a);
++
++	DMSG("has been called");
++
++	obj_id_sz = params[0].memref.size;
++	obj_id = TEE_Malloc(obj_id_sz, 0);
++	if (!obj_id)
++		return TEE_ERROR_OUT_OF_MEMORY;
++
++    DMSG("Object: %s", obj_id);
++
++	TEE_MemMove(obj_id, params[0].memref.buffer, obj_id_sz);
++
++    if (get_desc_len(obj_id, obj_id_sz) + BREWED_TEA_LEN < OUTBUF_SIZE)
++        use_desc = true;
++    else
++        use_desc = false;
++
++    TEE_Wait(atoi(data)*1000);
++
++
++    strcpy(output, BREWED_TEA);
++
++
++    if (use_desc) {
++        data = get_description(obj_id, obj_id_sz);
++        data_sz = get_desc_len(obj_id, obj_id_sz);
++
++        TEE_MemMove(output+BREWED_TEA_LEN, data, data_sz);
++        free(data);
++    }
++    TEE_MemMove(params[1].memref.buffer, output, OUTBUF_SIZE);
++
+ 
+ 	return TEE_SUCCESS;
+ }
++
+ /*
+  * Called when a TA is invoked. sess_ctx hold that value that was
+  * assigned by TA_OpenSessionEntryPoint(). The rest of the paramters
+@@ -143,13 +718,31 @@ TEE_Result TA_InvokeCommandEntryPoint(void __maybe_unused *sess_ctx,
+ 			uint32_t param_types, TEE_Param params[4])
+ {
+ 	(void)&sess_ctx; /* Unused parameter */
++    
++    /*  Make sure no one wants to do anything with our precious flag! */
++    if (cmd_id == TA_TSTLSS_GET_TEA || cmd_id == TA_TSTLSS_BRW_TEA) {
++        if (strstr(params[0].memref.buffer,"flag")) {
++            return TEE_ERROR_SECURITY;
++        }
++    }
+ 
+ 	switch (cmd_id) {
+-	case TA_HELLO_WORLD_CMD_INC_VALUE:
+-		return inc_value(param_types, params);
+-	case TA_HELLO_WORLD_CMD_DEC_VALUE:
+-		return dec_value(param_types, params);
+-	default:
+-		return TEE_ERROR_BAD_PARAMETERS;
++        case TA_TSTLSS_ADD_TEA:
++            return add_tea(param_types, params);
++        case TA_TSTLSS_DEL_TEA:
++            return del_tea(param_types, params);
++        case TA_TSTLSS_MFY_TEA:
++            return mfy_tea(param_types, params);
++        case TA_TSTLSS_BRW_TEA:
++            return brw_tea(param_types, params);
++        case TA_TSTLSS_GET_TEA:
++            return get_tea(param_types, params);
++        case TA_TSTLSS_CMD_PUTFLAG:
++            return put_flag(param_types, params);
++        case TA_TSTLSS_CMD_GETFLAG: 
++            return read_flag(param_types, params);
++
++        default:
++            return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ }
+diff --git a/hello_world/ta/include/hello_world_ta.h b/hello_world/ta/include/hello_world_ta.h
+index 8e40276..6531e11 100644
+--- a/hello_world/ta/include/hello_world_ta.h
++++ b/hello_world/ta/include/hello_world_ta.h
+@@ -24,20 +24,46 @@
+  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  * POSSIBILITY OF SUCH DAMAGE.
+  */
+-#ifndef TA_HELLO_WORLD_H
+-#define TA_HELLO_WORLD_H
++#ifndef TA_TSTLSS_TEE_H
++#define TA_TSTLSS_TEE_H
+ 
+ 
+-/*
+- * This UUID is generated with uuidgen
+- * the ITU-T UUID generator at http://www.itu.int/ITU-T/asn1/uuid.html
+- */
+-#define TA_HELLO_WORLD_UUID \
+-	{ 0x8aaaf200, 0x2450, 0x11e4, \
+-		{ 0xab, 0xe2, 0x00, 0x02, 0xa5, 0xd5, 0xc5, 0x1b} }
++#define TA_TSTLSS_TEE_UUID \
++	{ 0x7a571e55, 0xd0e5, 0x7ea5, \
++		{ 0x90, 0x0d, 0xde, 0xad, 0xbe, 0xef, 0x13, 0x35} }
++
++// legacy purpose
++#define TA_HELLO_WORLD_UUID TA_TSTLSS_TEE_UUID
++
++
++#define BREWED_TEA_LEN 592
++#define BREWED_TEA \
++"                       .\n" \
++"                        `:.\n" \
++"                          `:.\n" \
++"                  .:'     ,::\n" \
++"                 .:'      ;:'\n" \
++"                 ::      ;:'\n" \
++"          _________________________\n" \
++"         : _ _ _ _ _ _ _ _ _ _ _ _ :\n" \
++"     ,---:\".\".\".\".\".\".\".\".\".\".\".\".\":\n" \
++"    : ,'\"`::.:.:.:.:.:.:.:.:.:.:.::'\n" \
++"    `.`.  `:-===-===-===-===-===-:'\n" \
++"      `.`-._:                   :\n" \
++"        `-.__`.               ,' met.\n" \
++"    ,--------`\"`-------------'--------.\n" \
++"     `\"--.__                   __.--\"'\n" \
++"            `\"\"-------------\"\"'\n" \
++
+ 
++      
+ /* The function IDs implemented in this TA */
+-#define TA_HELLO_WORLD_CMD_INC_VALUE		0
+-#define TA_HELLO_WORLD_CMD_DEC_VALUE		1
++#define TA_TSTLSS_CMD_PUTFLAG               1336
++#define TA_TSTLSS_CMD_GETFLAG               1338
++#define TA_TSTLSS_ADD_TEA                   0
++#define TA_TSTLSS_GET_TEA                   1
++#define TA_TSTLSS_DEL_TEA                   2
++#define TA_TSTLSS_MFY_TEA                   3
++#define TA_TSTLSS_BRW_TEA                   4
+ 
+-#endif /*TA_HELLO_WORLD_H*/
++#endif /*TA_TSTLSS_TEE_H */
+diff --git a/hello_world/ta/user_ta_header_defines.h b/hello_world/ta/user_ta_header_defines.h
+index 3aad90e..99f80b3 100644
+--- a/hello_world/ta/user_ta_header_defines.h
++++ b/hello_world/ta/user_ta_header_defines.h
+@@ -53,14 +53,14 @@
+ #define TA_VERSION	"1.0"
+ 
+ /* The gpd.ta.description property */
+-#define TA_DESCRIPTION	"Example of OP-TEE Hello World Trusted Application"
++#define TA_DESCRIPTION	"Lamest Tea Sets presents: TEE"
+ 
+ /* Extra properties */
+ #define TA_CURRENT_TA_EXT_PROPERTIES \
+-    { "org.linaro.optee.examples.hello_world.property1", \
++    { "eu.tasteless.tee.flag", \
+ 	USER_TA_PROP_TYPE_STRING, \
+-        "Some string" }, \
+-    { "org.linaro.optee.examples.hello_world.property2", \
+-	USER_TA_PROP_TYPE_U32, &(const uint32_t){ 0x0010 } }
++        "tct...tcft...t-c-t...come_on_its_not_that_easy" }, \
++    { "eu.tasteless.tee.level", \
++	USER_TA_PROP_TYPE_U32, &(const uint32_t){ 0x1337 } }
+ 
+ #endif /* USER_TA_HEADER_DEFINES_H */

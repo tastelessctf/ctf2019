@@ -1,3 +1,6 @@
+# Challenge description
+
+```
 Everyone knows the real secret to good tea is getting the steep time just about right. As it it is a secret, tasteless supports saving it in a secure storage.
 
 nc hitme.tasteless.eu 10301 Flag in /flag1.txt
@@ -9,3 +12,14 @@ author: nsr
 $ sha1sum tee_updated.tar.gz 9bce927c88e592d5902afa9d77739cef30985db6 tee_updated.tar.gz
 
 #Old challenge files, preserved for fairness $ sha1sum tee.tar.gz db731e804b93a8fd955f6bf225f4bf4360311161 tee.tar.gz
+```
+
+# Folder organization
+
+```
+./solve_X.py: python files to solve the according stage
+./flag_X.py: the flags, who would've guessed
+./binaries/*: binaries given to the players
+./src/*: source used to build this chall
+./utils/*: some small helper scripts used by challenge author
+```
