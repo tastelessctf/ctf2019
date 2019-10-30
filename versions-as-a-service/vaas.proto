@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package vaas;
+
+service VaaService {
+    rpc Checkout (CheckoutRequest) returns (CheckoutResponse);
+    rpc Commit (CommitRequest) returns (CommitResponse);
+    rpc Diff (DiffRequest) returns (DiffResponse);
+    rpc Apply (ApplyRequest) returns (ApplyResponse);
+    rpc Identify (IdentifyRequest) returns (IdentifyResponse);
+}
+
+message CheckoutRequest {
+    string revision = 1;
+}
+
+message CheckoutResponse {
+    bytes content = 1;
+}
+
+message CommitRequest {
+    bytes content = 1;
+    string message = 2;
+}
+
+message CommitResponse {
+    string version = 1;
+}
+
+message Patch {
+    int64 offset = 1;
+    bytes patch = 2;
+}
+
+message DiffRequest {
+    string from = 1;
+    string to = 2;
+}
+
+message DiffResponse {
+    repeated Patch patches = 1;
+}
+
+message ApplyRequest {
+    string revision = 1;
+    repeated Patch patches = 2;
+}
+
+message ApplyResponse {
+    string status = 1;
+}
+
+message IdentifyRequest {
+    uint64 uid = 1;
+    uint64 gid = 2;
+    uint64 cid = 3;
+}
+
+message IdentifyResponse {
+    string status = 1;
+}
