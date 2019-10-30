@@ -1,0 +1,13 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use lib $ENV{GL_LIBDIR};
+use Gitolite::Hooks::Update;
+
+# gitolite update hook
+# ----------------------------------------------------------------------
+
+update();               # is not expected to return
+exit 1;                 # so if it does, something is wrong

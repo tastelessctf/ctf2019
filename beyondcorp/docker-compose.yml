@@ -1,0 +1,38 @@
+version: '3.7'
+services:
+  auth-proxy:
+    build: ./auth-proxy
+    restart: unless-stopped
+    ports:
+    - "8080:8080"
+    networks:
+      corp:
+        aliases:
+        - auth-proxy.corp
+
+  auth:
+    build: ./auth
+    restart: unless-stopped
+    networks:
+      corp:
+        aliases:
+        - auth.corp
+
+  fileserver:
+    build: ./fileserver
+    restart: unless-stopped
+    networks:
+      corp:
+        aliases:
+        - fileserver.corp
+
+  git:
+    build: ./git
+    restart: unless-stopped
+    networks:
+      corp:
+        aliases:
+        - git.corp
+
+networks:
+  corp:
